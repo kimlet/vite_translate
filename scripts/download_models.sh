@@ -7,9 +7,9 @@ set -e
 MODELS_DIR="$(dirname "$0")/../assets/models"
 mkdir -p "$MODELS_DIR"
 
-echo "=== Downloading whisper ggml-base model ==="
-WHISPER_URL="https://huggingface.co/ggerganov/whisper.cpp/resolve/main/ggml-base.bin"
-WHISPER_FILE="$MODELS_DIR/ggml-base.bin"
+echo "=== Downloading whisper ggml-tiny model ==="
+WHISPER_URL="https://huggingface.co/ggerganov/whisper.cpp/resolve/main/ggml-tiny.bin"
+WHISPER_FILE="$MODELS_DIR/ggml-tiny.bin"
 
 if [ ! -f "$WHISPER_FILE" ]; then
     curl -L "$WHISPER_URL" -o "$WHISPER_FILE"

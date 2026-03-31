@@ -1,5 +1,6 @@
 import 'dart:async';
 
+import 'package:flutter/foundation.dart';
 import 'package:flutter_riverpod/flutter_riverpod.dart';
 
 import '../models/conversation_message.dart';
@@ -289,6 +290,7 @@ final conversationEngineProvider = Provider<ConversationEngine>((ref) {
   final engine = ConversationEngine();
   final settings = ref.watch(settingsProvider);
   engine.setPrimaryLanguage(settings.primaryLanguageCode);
+  debugPrint('[Provider] ConversationEngine created, primary=${settings.primaryLanguageCode}');
   ref.onDispose(() => engine.dispose());
   return engine;
 });

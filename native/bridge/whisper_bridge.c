@@ -33,17 +33,85 @@ WhisperBridgeContext* whisper_bridge_init(const char* model_path) {
     }
 
     bridge->ctx = ctx;
-    LOGD("whisper_bridge_init: model loaded successfully\n");
+    LOGD("whisper_bridge_init: model loaded OK\n");
     return bridge;
 }
 
 void whisper_bridge_free(WhisperBridgeContext* ctx) {
     if (ctx) {
-        if (ctx->ctx) {
-            whisper_free(ctx->ctx);
-        }
+        if (ctx->ctx) whisper_free(ctx->ctx);
         free(ctx);
     }
+}
+
+static WhisperBridgeResult* run_whisper(
+    WhisperBridgeContext* ctx,
+    const float* samples,
+    int n_samples,
+    int do_translate
+) {
+    if (!ctx || !ctx->ctx || !samples || n_samples <= 0) {
+        LOGD("run_whisper: invalid args\n");
+        return NULL;
+    }
+
+    LOGD("run_whisper: %d samples (%.1fs), translate=%d\n",
+         n_samples, (float)n_samples / 16000.0f, do_translate);
+
+    struct whisper_full_params params = whisper_full_default_params(WHISPER_SAMPLING_GREEDY);
+    params.print_realtime   = 0;
+    params.print_progress   = 0;
+    params.print_timestamps = 0;
+    params.print_special    = 0;
+    params.no_timestamps    = 1;
+    params.single_segment   = 0;
+    params.n_threads        = 4;
+    params.language         = "auto";
+    params.detect_language  = 0;
+    params.translate        = do_translate; // 0=transcribe, 1=translate to English
+
+    int ret = whisper_full(ctx->ctx, params, samples, n_samples);
+    LOGD("run_whisper: whisper_full returned %d\n", ret);
+    if (ret != 0) return NULL;
+
+    int n_segments = whisper_full_n_segments(ctx->ctx);
+    LOGD("run_whisper: %d segments\n", n_segments);
+
+    WhisperBridgeResult* result = (WhisperBridgeResult*)malloc(sizeof(WhisperBridgeResult));
+    if (!result) return NULL;
+
+    // Collect all segment text
+    if (n_segments > 0) {
+        int total_len = 0;
+        for (int i = 0; i < n_segments; i++) {
+            const char* t = whisper_full_get_segment_text(ctx->ctx, i);
+            if (t) total_len += strlen(t);
+        }
+        char* full_text = (char*)malloc(total_len + 1);
+        full_text[0] = '\0';
+        for (int i = 0; i < n_segments; i++) {
+            const char* t = whisper_full_get_segment_text(ctx->ctx, i);
+            if (t) strcat(full_text, t);
+        }
+        result->text = full_text;
+    } else {
+        result->text = strdup("");
+    }
+
+    // Detected language
+    int lang_id = whisper_full_lang_id(ctx->ctx);
+    if (lang_id >= 0) {
+        result->language = strdup(whisper_lang_str(lang_id));
+    } else {
+        result->language = strdup("en");
+    }
+    result->language_probability = lang_id >= 0 ? 1.0f : 0.0f;
+
+    LOGD("run_whisper: lang=%s text=\"%.80s%s\"\n",
+         result->language, result->text,
+         strlen(result->text) > 80 ? "..." : "");
+
+    return result;
 }
 
 WhisperBridgeResult* whisper_bridge_transcribe(
@@ -52,88 +120,16 @@ WhisperBridgeResult* whisper_bridge_transcribe(
     int n_samples,
     int detect_language
 ) {
-    if (!ctx || !ctx->ctx || !samples || n_samples <= 0) {
-        LOGD("whisper_bridge_transcribe: invalid args (ctx=%p, samples=%p, n=%d)\n",
-             (void*)ctx, (void*)samples, n_samples);
-        return NULL;
-    }
+    (void)detect_language; // always auto-detect via language="auto"
+    return run_whisper(ctx, samples, n_samples, 0);
+}
 
-    LOGD("whisper_bridge_transcribe: %d samples (%.1f sec)\n",
-         n_samples, (float)n_samples / 16000.0f);
-
-    struct whisper_full_params params = whisper_full_default_params(WHISPER_SAMPLING_GREEDY);
-    params.print_realtime = 0;
-    params.print_progress = 0;
-    params.print_timestamps = 0;
-    params.print_special = 0;
-    params.translate = 0;
-    params.no_timestamps = 1;
-    params.single_segment = 0; // Allow multiple segments
-    params.n_threads = 4;
-
-    // Always set language to "auto" for auto-detection + transcription.
-    // Setting language=NULL with detect_language=1 only detects without transcribing.
-    params.language = "auto";
-    params.detect_language = 0;
-
-    int ret = whisper_full(ctx->ctx, params, samples, n_samples);
-    LOGD("whisper_bridge_transcribe: whisper_full returned %d\n", ret);
-
-    if (ret != 0) {
-        LOGD("whisper_bridge_transcribe: whisper_full FAILED\n");
-        return NULL;
-    }
-
-    WhisperBridgeResult* result = (WhisperBridgeResult*)malloc(sizeof(WhisperBridgeResult));
-    if (!result) {
-        return NULL;
-    }
-
-    // Collect text from all segments
-    int n_segments = whisper_full_n_segments(ctx->ctx);
-    LOGD("whisper_bridge_transcribe: %d segments\n", n_segments);
-
-    if (n_segments > 0) {
-        // Calculate total text length
-        int total_len = 0;
-        for (int i = 0; i < n_segments; i++) {
-            const char* seg_text = whisper_full_get_segment_text(ctx->ctx, i);
-            if (seg_text) {
-                total_len += strlen(seg_text);
-            }
-        }
-
-        // Concatenate all segments
-        char* full_text = (char*)malloc(total_len + 1);
-        full_text[0] = '\0';
-        for (int i = 0; i < n_segments; i++) {
-            const char* seg_text = whisper_full_get_segment_text(ctx->ctx, i);
-            if (seg_text) {
-                strcat(full_text, seg_text);
-            }
-        }
-        result->text = full_text;
-        LOGD("whisper_bridge_transcribe: text=\"%s\"\n", full_text);
-    } else {
-        result->text = strdup("");
-        LOGD("whisper_bridge_transcribe: no segments, empty text\n");
-    }
-
-    // Get detected language
-    int lang_id = whisper_full_lang_id(ctx->ctx);
-    if (lang_id >= 0) {
-        const char* lang = whisper_lang_str(lang_id);
-        result->language = strdup(lang ? lang : "en");
-        LOGD("whisper_bridge_transcribe: detected language=%s (id=%d)\n",
-             result->language, lang_id);
-    } else {
-        result->language = strdup("en");
-        LOGD("whisper_bridge_transcribe: no language detected, defaulting to en\n");
-    }
-
-    result->language_probability = lang_id >= 0 ? 1.0f : 0.0f;
-
-    return result;
+WhisperBridgeResult* whisper_bridge_translate(
+    WhisperBridgeContext* ctx,
+    const float* samples,
+    int n_samples
+) {
+    return run_whisper(ctx, samples, n_samples, 1);
 }
 
 void whisper_bridge_free_result(WhisperBridgeResult* result) {

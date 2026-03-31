@@ -3,22 +3,28 @@ import 'dart:io';
 
 import 'package:flutter/foundation.dart';
 
-import '../core/language_codes.dart';
 import '../models/conversation_message.dart';
 import '../models/transcription_result.dart';
 import 'asr/whisper_isolate.dart';
 import 'audio/audio_recorder.dart';
+import 'audio/audio_saver.dart';
 import 'audio/audio_stream_controller.dart';
 import 'model_manager.dart';
-import 'translation/translation_isolate.dart';
 
-/// Orchestrates the full pipeline: audio → ASR → translate → messages.
+/// Orchestrates: audio → whisper transcribe + translate → conversation messages.
+///
+/// Translation strategy using whisper's built-in capabilities:
+/// - Foreign speech → whisper transcribes (original) + translates to English
+/// - Primary language speech → whisper transcribes only (shown as-is)
+///
+/// This means the primary language MUST be English for whisper translation to work.
+/// For non-English primary languages, we fall back to transcription-only mode.
 class ConversationEngine {
   final AudioRecorderService _recorder = AudioRecorderService();
   final AudioStreamController _streamController = AudioStreamController();
   final WhisperIsolate _whisper = WhisperIsolate();
-  final TranslationIsolate _translation = TranslationIsolate();
   final ModelManager _modelManager = ModelManager();
+  final AudioSaver _audioSaver = AudioSaver();
 
   final _messageController =
       StreamController<ConversationMessage>.broadcast();
@@ -27,247 +33,158 @@ class ConversationEngine {
   final _errorController = StreamController<String>.broadcast();
 
   String _primaryLanguage = 'en';
-  final Set<String> _detectedForeignLanguages = {};
   bool _isRunning = false;
-  bool _translationAvailable = false;
+  bool _canTranslate = false; // true if primary=en (whisper translates to English)
   int _messageCounter = 0;
 
   StreamSubscription<Float32List>? _utteranceSub;
   StreamSubscription<Float32List>? _partialSub;
 
-  /// Stream of completed, translated conversation messages.
   Stream<ConversationMessage> get messageStream => _messageController.stream;
-
-  /// Stream of partial transcription results (while user is speaking).
   Stream<TranscriptionResult> get partialStream => _partialController.stream;
-
-  /// Stream of error messages.
   Stream<String> get errorStream => _errorController.stream;
 
   bool get isRunning => _isRunning;
-  bool get translationAvailable => _translationAvailable;
-  WhisperIsolate get whisperIsolate => _whisper;
+  bool get canTranslate => _canTranslate;
   String get primaryLanguage => _primaryLanguage;
-  Set<String> get detectedForeignLanguages =>
-      Set.unmodifiable(_detectedForeignLanguages);
+  WhisperIsolate get whisperIsolate => _whisper;
 
   void setPrimaryLanguage(String langCode) {
     _primaryLanguage = langCode;
+    _canTranslate = langCode == 'en';
   }
 
-  /// Initialize models. Must be called before start().
-  /// Whisper is required; translation is optional (graceful degradation).
   Future<void> initialize() async {
-    // Always initialize whisper (required for ASR)
-    final whisperReady = await _modelManager.isWhisperModelReady();
-    if (!whisperReady) {
-      throw StateError('Whisper model not downloaded. Run onboarding first.');
-    }
-
     final whisperPath = await _modelManager.getWhisperModelPath();
-    final modelFile = File(whisperPath);
-    final exists = modelFile.existsSync();
-    final size = exists ? modelFile.lengthSync() : 0;
-    debugPrint('[Engine] Whisper model path: $whisperPath');
-    debugPrint('[Engine] Whisper model exists=$exists size=${(size / 1024 / 1024).toStringAsFixed(1)}MB');
-
-    if (!exists) {
-      throw StateError('Whisper model file not found at: $whisperPath');
+    if (whisperPath == null) {
+      // List what's in the models dir for debugging
+      final dir = await _modelManager.modelsDir;
+      final contents = Directory(dir).listSync();
+      debugPrint('[Engine] Models dir ($dir) contents:');
+      for (final f in contents) {
+        debugPrint('[Engine]   ${f.path}');
+      }
+      throw StateError('No whisper model found. Download via onboarding.');
     }
+
+    final modelFile = File(whisperPath);
+    debugPrint('[Engine] Model: $whisperPath (${(modelFile.lengthSync() / 1024 / 1024).toStringAsFixed(1)}MB)');
 
     await _whisper.initialize(whisperPath);
-    debugPrint('[Engine] Whisper model loaded successfully');
-
-    // Try to initialize translation (optional)
-    final nllbReady = await _modelManager.isNllbModelReady();
-    if (nllbReady) {
-      try {
-        final nllbDir = await _modelManager.getNllbModelDir();
-        await _translation.initialize(nllbDir);
-        _translationAvailable = true;
-        debugPrint('Translation engine initialized');
-      } catch (e) {
-        debugPrint('Translation init failed (will run transcription-only): $e');
-        _translationAvailable = false;
-      }
-    } else {
-      debugPrint('NLLB model not found — running in transcription-only mode');
-      _translationAvailable = false;
-    }
+    _canTranslate = _primaryLanguage == 'en';
+    debugPrint('[Engine] Ready. primary=$_primaryLanguage canTranslate=$_canTranslate');
   }
 
-  /// Start listening and translating.
   Future<void> start() async {
     if (_isRunning) return;
+    if (!_whisper.isInitialized) {
+      debugPrint('[Engine] Cannot start — whisper not initialized');
+      return;
+    }
     _isRunning = true;
-    debugPrint('[Engine] Starting audio capture...');
+    debugPrint('[Engine] Starting...');
 
     final audioStream = await _recorder.startRecording();
-
-    // Feed audio chunks to the stream controller
     audioStream.listen(_streamController.processAudioChunk);
-    debugPrint('[Engine] Listening for speech (primary=$_primaryLanguage, translation=$_translationAvailable)');
 
-    // Listen for complete utterances
-    _utteranceSub = _streamController.utteranceStream.listen(
-      _handleUtterance,
-    );
+    _utteranceSub = _streamController.utteranceStream.listen(_handleUtterance);
+    _partialSub = _streamController.partialStream.listen(_handlePartialAudio);
 
-    // Listen for partial audio (for live transcription)
-    _partialSub = _streamController.partialStream.listen(
-      _handlePartialAudio,
-    );
+    debugPrint('[Engine] Listening (primary=$_primaryLanguage)');
   }
 
-  /// Stop listening.
   Future<void> stop() async {
     if (!_isRunning) return;
     _isRunning = false;
-
     await _utteranceSub?.cancel();
     await _partialSub?.cancel();
     await _recorder.stopRecording();
     _streamController.reset();
+    debugPrint('[Engine] Stopped');
   }
 
   Future<void> _handleUtterance(Float32List audioSamples) async {
     try {
-      debugPrint('[Engine] Transcribing ${audioSamples.length} samples...');
-      // 1. Transcribe with language detection
+      final sw = Stopwatch()..start();
+      final msgId = 'msg_${_messageCounter++}';
+
+      // Save audio to disk
+      final audioPath = await _audioSaver.saveUtterance(audioSamples, msgId);
+
+      // Step 1: Transcribe to get original text + detected language
       final transcription = await _whisper.transcribe(audioSamples);
+      debugPrint('[Engine] Transcribe: ${sw.elapsedMilliseconds}ms '
+          'lang=${transcription.languageCode} "${transcription.text}"');
 
-      if (transcription.isEmpty) {
-        debugPrint('[Engine] Transcription empty, skipping');
-        return;
-      }
+      if (transcription.isEmpty) return;
 
-      debugPrint('[Engine] Transcribed: lang=${transcription.languageCode} '
-          'prob=${transcription.languageProbability.toStringAsFixed(2)} '
-          'text="${transcription.text}"');
-
-      // Clear partial transcription
+      // Clear partial
       _partialController.add(TranscriptionResult(
-        text: '',
-        languageCode: transcription.languageCode,
-        languageProbability: 0,
-        isPartial: false,
+        text: '', languageCode: transcription.languageCode,
+        languageProbability: 0, isPartial: false,
       ));
 
       final detectedLang = transcription.languageCode;
       final isPrimary = detectedLang == _primaryLanguage;
 
       if (isPrimary) {
-        await _handlePrimaryLanguageUtterance(transcription);
-      } else {
-        _detectedForeignLanguages.add(detectedLang);
-        await _handleForeignLanguageUtterance(transcription);
-      }
-    } catch (e, stack) {
-      debugPrint('[Engine] Transcription error: $e\n$stack');
-      _errorController.add('Transcription error: $e');
-    }
-  }
-
-  Future<void> _handlePrimaryLanguageUtterance(
-    TranscriptionResult transcription,
-  ) async {
-    if (!_translationAvailable || _detectedForeignLanguages.isEmpty) {
-      // No translation available or no foreign languages detected — show as-is
-      _messageController.add(ConversationMessage(
-        id: 'msg_${_messageCounter++}',
-        originalText: transcription.text,
-        translatedText: transcription.text,
-        detectedLanguage: _primaryLanguage,
-        targetLanguage: _primaryLanguage,
-        isPrimaryLanguageSpeaker: true,
-        timestamp: DateTime.now(),
-      ));
-      return;
-    }
-
-    // Translate to each detected foreign language
-    for (final targetLang in _detectedForeignLanguages) {
-      try {
-        final translated = await _translation.translate(
-          transcription.text,
-          _primaryLanguage,
-          targetLang,
-        );
-
         _messageController.add(ConversationMessage(
-          id: 'msg_${_messageCounter++}',
+          id: msgId,
           originalText: transcription.text,
-          translatedText: translated,
-          detectedLanguage: _primaryLanguage,
-          targetLanguage: targetLang,
+          translatedText: transcription.text,
+          detectedLanguage: detectedLang,
+          targetLanguage: _primaryLanguage,
           isPrimaryLanguageSpeaker: true,
           timestamp: DateTime.now(),
+          audioPath: audioPath,
         ));
-      } catch (e) {
-        _errorController.add(
-          'Translation to ${LanguageCodes.getLanguageName(targetLang)} failed: $e',
-        );
+      } else if (_canTranslate) {
+        final translation = await _whisper.translateToEnglish(audioSamples);
+        debugPrint('[Engine] Translate: ${sw.elapsedMilliseconds}ms "${translation.text}"');
+
+        _messageController.add(ConversationMessage(
+          id: msgId,
+          originalText: transcription.text,
+          translatedText: translation.text.isNotEmpty ? translation.text : transcription.text,
+          detectedLanguage: detectedLang,
+          targetLanguage: 'en',
+          isPrimaryLanguageSpeaker: false,
+          timestamp: DateTime.now(),
+          audioPath: audioPath,
+        ));
+      } else {
+        _messageController.add(ConversationMessage(
+          id: msgId,
+          originalText: transcription.text,
+          translatedText: transcription.text,
+          detectedLanguage: detectedLang,
+          targetLanguage: detectedLang,
+          isPrimaryLanguageSpeaker: false,
+          timestamp: DateTime.now(),
+          audioPath: audioPath,
+        ));
       }
-    }
-  }
 
-  Future<void> _handleForeignLanguageUtterance(
-    TranscriptionResult transcription,
-  ) async {
-    if (!_translationAvailable) {
-      // No translation — show original text with detected language
-      _messageController.add(ConversationMessage(
-        id: 'msg_${_messageCounter++}',
-        originalText: transcription.text,
-        translatedText: transcription.text,
-        detectedLanguage: transcription.languageCode,
-        targetLanguage: transcription.languageCode,
-        isPrimaryLanguageSpeaker: false,
-        timestamp: DateTime.now(),
-      ));
-      return;
-    }
-
-    try {
-      final translated = await _translation.translate(
-        transcription.text,
-        transcription.languageCode,
-        _primaryLanguage,
-      );
-
-      _messageController.add(ConversationMessage(
-        id: 'msg_${_messageCounter++}',
-        originalText: transcription.text,
-        translatedText: translated,
-        detectedLanguage: transcription.languageCode,
-        targetLanguage: _primaryLanguage,
-        isPrimaryLanguageSpeaker: false,
-        timestamp: DateTime.now(),
-      ));
-    } catch (e) {
-      _errorController.add('Translation failed: $e');
+      debugPrint('[Engine] Total pipeline: ${sw.elapsedMilliseconds}ms');
+    } catch (e, stack) {
+      debugPrint('[Engine] Error: $e\n$stack');
+      _errorController.add('Error: $e');
     }
   }
 
   Future<void> _handlePartialAudio(Float32List audioSamples) async {
     try {
-      final result = await _whisper.transcribe(
-        audioSamples,
-        isPartial: true,
-      );
+      final result = await _whisper.transcribe(audioSamples, isPartial: true);
       if (!result.isEmpty) {
-        debugPrint('[Engine] Partial: "${result.text}" (${result.languageCode})');
+        debugPrint('[Engine] Partial: "${result.text}"');
         _partialController.add(result);
       }
-    } catch (e) {
-      debugPrint('[Engine] Partial transcription error: $e');
-    }
+    } catch (_) {}
   }
 
   Future<void> dispose() async {
     await stop();
     _whisper.dispose();
-    _translation.dispose();
     _streamController.dispose();
     await _recorder.dispose();
     await _messageController.close();

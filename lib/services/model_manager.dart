@@ -19,11 +19,12 @@ class ModelManager {
     return _modelsDir!;
   }
 
-  /// Check if the whisper model is downloaded.
+  /// Check if any whisper model is downloaded.
   Future<bool> isWhisperModelReady() async {
-    final dir = await modelsDir;
-    final file = File('$dir/$kWhisperModelFileName');
-    return file.existsSync() && file.lengthSync() > 1024 * 1024; // > 1MB
+    final path = await getWhisperModelPath();
+    if (path == null) return false;
+    final file = File(path);
+    return file.existsSync() && file.lengthSync() > 1024 * 1024;
   }
 
   /// Check if the NLLB translation model is downloaded and valid.
@@ -39,7 +40,22 @@ class ModelManager {
   }
 
   /// Get the path to the whisper model file.
-  Future<String> getWhisperModelPath() async {
+  /// Tries tiny first, falls back to base if it exists.
+  Future<String?> getWhisperModelPath() async {
+    final dir = await modelsDir;
+    // Prefer tiny (faster), fall back to base
+    for (final name in ['ggml-tiny.bin', 'ggml-base.bin', 'ggml-small.bin']) {
+      final file = File('$dir/$name');
+      if (file.existsSync() && file.lengthSync() > 1024 * 1024) {
+        return file.path;
+      }
+    }
+    // Return the preferred path for download
+    return null;
+  }
+
+  /// Get the expected download path for the whisper model.
+  Future<String> getWhisperModelDownloadPath() async {
     final dir = await modelsDir;
     return '$dir/$kWhisperModelFileName';
   }
@@ -55,8 +71,7 @@ class ModelManager {
   Future<void> downloadWhisperModel({
     void Function(double progress)? onProgress,
   }) async {
-    final dir = await modelsDir;
-    final filePath = '$dir/$kWhisperModelFileName';
+    final filePath = await getWhisperModelDownloadPath();
 
     if (await File(filePath).exists()) return;
 

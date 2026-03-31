@@ -5,7 +5,9 @@ import 'dart:typed_data';
 import '../../models/transcription_result.dart';
 import 'whisper_service.dart';
 
-/// Runs whisper inference in a separate Dart isolate to avoid blocking the UI.
+enum WhisperMode { transcribe, translate }
+
+/// Runs whisper inference in a separate Dart isolate.
 class WhisperIsolate {
   Isolate? _isolate;
   SendPort? _sendPort;
@@ -14,7 +16,6 @@ class WhisperIsolate {
 
   bool get isInitialized => _sendPort != null;
 
-  /// Spawn the isolate and initialize the whisper model.
   Future<void> initialize(String modelPath) async {
     final receivePort = ReceivePort();
 
@@ -43,11 +44,27 @@ class WhisperIsolate {
     _sendPort = await completer.future;
   }
 
-  /// Transcribe audio samples in the background isolate.
+  /// Transcribe audio — keeps original language text.
   Future<TranscriptionResult> transcribe(
     Float32List samples, {
     bool isPartial = false,
   }) {
+    return _send(samples, WhisperMode.transcribe, isPartial);
+  }
+
+  /// Translate audio to English — whisper built-in translation.
+  Future<TranscriptionResult> translateToEnglish(
+    Float32List samples, {
+    bool isPartial = false,
+  }) {
+    return _send(samples, WhisperMode.translate, isPartial);
+  }
+
+  Future<TranscriptionResult> _send(
+    Float32List samples,
+    WhisperMode mode,
+    bool isPartial,
+  ) {
     if (_sendPort == null) {
       throw StateError('WhisperIsolate not initialized');
     }
@@ -59,6 +76,7 @@ class WhisperIsolate {
     _sendPort!.send(_IsolateRequest(
       requestId: id,
       samples: samples,
+      mode: mode,
       isPartial: isPartial,
     ));
 
@@ -85,10 +103,18 @@ class WhisperIsolate {
     receivePort.listen((message) {
       if (message is _IsolateRequest) {
         try {
-          final result = service.transcribe(
-            message.samples,
-            isPartial: message.isPartial,
-          );
+          final TranscriptionResult result;
+          if (message.mode == WhisperMode.translate) {
+            result = service.translateToEnglish(
+              message.samples,
+              isPartial: message.isPartial,
+            );
+          } else {
+            result = service.transcribe(
+              message.samples,
+              isPartial: message.isPartial,
+            );
+          }
           init.sendPort.send(_IsolateResponse(
             requestId: message.requestId,
             result: result,
@@ -113,10 +139,12 @@ class _IsolateInitMessage {
 class _IsolateRequest {
   final int requestId;
   final Float32List samples;
+  final WhisperMode mode;
   final bool isPartial;
   _IsolateRequest({
     required this.requestId,
     required this.samples,
+    required this.mode,
     required this.isPartial,
   });
 }
