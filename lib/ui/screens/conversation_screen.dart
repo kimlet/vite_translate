@@ -1,7 +1,10 @@
 import 'package:flutter/material.dart';
 import 'package:flutter_riverpod/flutter_riverpod.dart';
 
+import '../../models/conversation_message.dart';
+import '../../services/audio/test_audio_service.dart';
 import '../../state/conversation_state.dart';
+import '../../state/settings_state.dart';
 import '../widgets/message_bubble.dart';
 import '../widgets/partial_transcription.dart';
 import '../widgets/recording_indicator.dart';
@@ -63,6 +66,78 @@ class _ConversationScreenState extends ConsumerState<ConversationScreen>
     super.dispose();
   }
 
+  Future<void> _testWithAudioFile() async {
+    try {
+      debugPrint('[Test] Loading test audio file...');
+      final samples = await TestAudioService.loadWavAsset(
+        'assets/test_audio/test_english.wav',
+      );
+
+      debugPrint('[Test] Feeding ${samples.length} samples to whisper...');
+      final engine = ref.read(conversationEngineProvider);
+
+      if (!engine.isRunning) {
+        debugPrint('[Test] Engine not running, initializing...');
+        await engine.initialize();
+      }
+
+      // Feed directly to whisper via the engine's internal method
+      // We simulate an utterance by transcribing the test audio
+      final whisper = engine.whisperIsolate;
+      if (!whisper.isInitialized) {
+        debugPrint('[Test] Whisper not initialized!');
+        if (mounted) {
+          ScaffoldMessenger.of(context).showSnackBar(
+            const SnackBar(content: Text('Whisper model not loaded. Download model first.')),
+          );
+        }
+        return;
+      }
+
+      debugPrint('[Test] Transcribing...');
+      final result = await whisper.transcribe(samples);
+      debugPrint('[Test] Result: lang=${result.languageCode} text="${result.text}"');
+
+      if (result.isEmpty) {
+        if (mounted) {
+          ScaffoldMessenger.of(context).showSnackBar(
+            const SnackBar(content: Text('Transcription returned empty result')),
+          );
+        }
+        return;
+      }
+
+      // Add as a conversation message
+      final settings = ref.read(settingsProvider);
+      final isPrimary = result.languageCode == settings.primaryLanguageCode;
+
+      ref.read(conversationProvider.notifier).addMessage(
+        ConversationMessage(
+          id: 'test_${DateTime.now().millisecondsSinceEpoch}',
+          originalText: result.text,
+          translatedText: result.text, // No translation in test mode
+          detectedLanguage: result.languageCode,
+          targetLanguage: settings.primaryLanguageCode,
+          isPrimaryLanguageSpeaker: isPrimary,
+          timestamp: DateTime.now(),
+        ),
+      );
+
+      if (mounted) {
+        ScaffoldMessenger.of(context).showSnackBar(
+          SnackBar(content: Text('Detected: ${result.languageCode} — "${result.text}"')),
+        );
+      }
+    } catch (e, stack) {
+      debugPrint('[Test] Error: $e\n$stack');
+      if (mounted) {
+        ScaffoldMessenger.of(context).showSnackBar(
+          SnackBar(content: Text('Test failed: $e')),
+        );
+      }
+    }
+  }
+
   void _scrollToBottom() {
     if (_scrollController.hasClients) {
       _scrollController.animateTo(
@@ -104,6 +179,19 @@ class _ConversationScreenState extends ConsumerState<ConversationScreen>
           ),
         ),
         actions: [
+          IconButton(
+            icon: const Icon(Icons.mic_external_on),
+            tooltip: 'Test Audio File',
+            onPressed: () => _testWithAudioFile(),
+          ),
+          IconButton(
+            icon: const Icon(Icons.play_arrow),
+            tooltip: 'Run Demo',
+            onPressed: () {
+              final lang = ref.read(settingsProvider).primaryLanguageCode;
+              ref.read(conversationProvider.notifier).runDemo(lang);
+            },
+          ),
           IconButton(
             icon: const Icon(Icons.delete_outline),
             onPressed: () {

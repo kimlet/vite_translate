@@ -1,4 +1,5 @@
 import 'dart:async';
+import 'dart:io';
 
 import 'package:flutter/foundation.dart';
 
@@ -45,6 +46,7 @@ class ConversationEngine {
 
   bool get isRunning => _isRunning;
   bool get translationAvailable => _translationAvailable;
+  WhisperIsolate get whisperIsolate => _whisper;
   String get primaryLanguage => _primaryLanguage;
   Set<String> get detectedForeignLanguages =>
       Set.unmodifiable(_detectedForeignLanguages);
@@ -63,9 +65,18 @@ class ConversationEngine {
     }
 
     final whisperPath = await _modelManager.getWhisperModelPath();
-    debugPrint('[Engine] Loading whisper model: $whisperPath');
+    final modelFile = File(whisperPath);
+    final exists = modelFile.existsSync();
+    final size = exists ? modelFile.lengthSync() : 0;
+    debugPrint('[Engine] Whisper model path: $whisperPath');
+    debugPrint('[Engine] Whisper model exists=$exists size=${(size / 1024 / 1024).toStringAsFixed(1)}MB');
+
+    if (!exists) {
+      throw StateError('Whisper model file not found at: $whisperPath');
+    }
+
     await _whisper.initialize(whisperPath);
-    debugPrint('[Engine] Whisper model loaded');
+    debugPrint('[Engine] Whisper model loaded successfully');
 
     // Try to initialize translation (optional)
     final nllbReady = await _modelManager.isNllbModelReady();
