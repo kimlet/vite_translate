@@ -44,8 +44,23 @@ app.*.map.json
 /android/app/profile
 /android/app/release
 
+# IDE
+.vscode/
+.idea/
+
 # FVM
 .fvm/
+
+# Flutter generated
+.metadata
+pubspec.lock
+
+# iOS generated
+ios/Podfile.lock
+ios/Pods/
+ios/Runner.xcodeproj/project.pbxproj
+ios/Runner.xcodeproj/project.xcworkspace/xcshareddata/WorkspaceSettings.xcsettings
+ios/Runner.xcworkspace/xcshareddata/WorkspaceSettings.xcsettings
 
 # ML model files
 *.bin
