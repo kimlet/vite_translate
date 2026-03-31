@@ -1,0 +1,30 @@
+{
+    // Use IntelliSense to learn about possible attributes.
+    // Hover to view descriptions of existing attributes.
+    // For more information, visit: https://go.microsoft.com/fwlink/?linkid=830387
+    "version": "0.2.0",
+    "configurations": [
+        {
+            "name": "netcorpewd-app",
+            "request": "launch",
+            "type": "dart",
+            "xdebugSettings": {
+                "max_children": 128,
+                "max_data": -1,
+                "max_depth": 3
+            },
+        },
+        {
+            "name": "netcorpewd-app (profile mode)",
+            "request": "launch",
+            "type": "dart",
+            "flutterMode": "profile"
+        },
+        {
+            "name": "netcorpewd-app (release mode)",
+            "request": "launch",
+            "type": "dart",
+            "flutterMode": "release"
+        }
+    ]
+}
