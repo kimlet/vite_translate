@@ -53,6 +53,59 @@ class SettingsScreen extends ConsumerWidget {
           Padding(
             padding: const EdgeInsets.all(16),
             child: Text(
+              'Audio',
+              style: theme.textTheme.titleMedium?.copyWith(
+                fontWeight: FontWeight.bold,
+              ),
+            ),
+          ),
+          Padding(
+            padding: const EdgeInsets.symmetric(horizontal: 16),
+            child: Text(
+              'Sample rate for audio capture. 16 kHz is recommended for best '
+              'transcription quality. 8 kHz uses less resources but may '
+              'reduce accuracy.',
+              style: theme.textTheme.bodySmall?.copyWith(
+                color: theme.colorScheme.onSurfaceVariant,
+              ),
+            ),
+          ),
+          const SizedBox(height: 8),
+          RadioGroup<int>(
+            groupValue: settings.sampleRate,
+            onChanged: (v) {
+              if (v != null) {
+                ref.read(settingsProvider.notifier).setSampleRate(v);
+              }
+            },
+            child: Column(
+              children: [
+                RadioListTile<int>(
+                  title: const Text('16 kHz'),
+                  subtitle: const Text('Best quality (recommended)'),
+                  value: 16000,
+                ),
+                RadioListTile<int>(
+                  title: const Text('8 kHz'),
+                  subtitle: const Text('Lower resource usage'),
+                  value: 8000,
+                ),
+              ],
+            ),
+          ),
+          Padding(
+            padding: const EdgeInsets.symmetric(horizontal: 16),
+            child: Text(
+              'Restart the app after changing sample rate.',
+              style: theme.textTheme.bodySmall?.copyWith(
+                color: theme.colorScheme.error,
+              ),
+            ),
+          ),
+          const Divider(),
+          Padding(
+            padding: const EdgeInsets.all(16),
+            child: Text(
               'About',
               style: theme.textTheme.titleMedium?.copyWith(
                 fontWeight: FontWeight.bold,

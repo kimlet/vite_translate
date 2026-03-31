@@ -33,8 +33,9 @@ class ConversationEngine {
   final _errorController = StreamController<String>.broadcast();
 
   String _primaryLanguage = 'en';
+  int _sampleRate = 16000;
   bool _isRunning = false;
-  bool _canTranslate = false; // true if primary=en (whisper translates to English)
+  bool _canTranslate = false;
   int _messageCounter = 0;
 
   StreamSubscription<Float32List>? _utteranceSub;
@@ -52,6 +53,10 @@ class ConversationEngine {
   void setPrimaryLanguage(String langCode) {
     _primaryLanguage = langCode;
     _canTranslate = langCode == 'en';
+  }
+
+  void setSampleRate(int rate) {
+    _sampleRate = rate;
   }
 
   Future<void> initialize() async {
@@ -82,9 +87,10 @@ class ConversationEngine {
       return;
     }
     _isRunning = true;
-    debugPrint('[Engine] Starting...');
+    debugPrint('[Engine] Starting (sampleRate=$_sampleRate)...');
 
-    final audioStream = await _recorder.startRecording();
+    _streamController.setInputSampleRate(_sampleRate);
+    final audioStream = await _recorder.startRecording(sampleRate: _sampleRate);
     audioStream.listen(_streamController.processAudioChunk);
 
     _utteranceSub = _streamController.utteranceStream.listen(_handleUtterance);

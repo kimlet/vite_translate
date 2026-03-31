@@ -16,6 +16,12 @@ class AudioStreamController {
   VadState _previousState = VadState.silence;
   int _samplesInBuffer = 0;
   Timer? _partialTimer;
+  int _inputSampleRate = kSampleRate; // actual recording rate
+
+  void setInputSampleRate(int rate) {
+    _inputSampleRate = rate;
+    debugPrint('[AudioStream] Input sample rate set to ${rate}Hz');
+  }
 
   /// Stream of complete utterances (after speech ends).
   Stream<Float32List> get utteranceStream => _utteranceController.stream;
@@ -106,15 +112,36 @@ class AudioStreamController {
       0,
       (sum, chunk) => sum + chunk.length,
     );
-    final result = Float32List(totalSamples);
+    final raw = Float32List(totalSamples);
     var offset = 0;
     for (final chunk in _speechBuffer) {
       for (var i = 0; i < chunk.length; i++) {
-        result[offset + i] = chunk[i] / 32768.0;
+        raw[offset + i] = chunk[i] / 32768.0;
       }
       offset += chunk.length;
     }
-    return result;
+
+    // Resample to 16kHz if needed (whisper requires 16kHz)
+    if (_inputSampleRate != kSampleRate && _inputSampleRate > 0) {
+      return _resample(raw, _inputSampleRate, kSampleRate);
+    }
+    return raw;
+  }
+
+  /// Simple linear interpolation resampler.
+  static Float32List _resample(Float32List input, int fromRate, int toRate) {
+    if (fromRate == toRate) return input;
+    final ratio = fromRate / toRate;
+    final outputLen = (input.length / ratio).floor();
+    final output = Float32List(outputLen);
+    for (var i = 0; i < outputLen; i++) {
+      final srcIdx = i * ratio;
+      final idx0 = srcIdx.floor();
+      final idx1 = (idx0 + 1).clamp(0, input.length - 1);
+      final frac = srcIdx - idx0;
+      output[i] = input[idx0] * (1.0 - frac) + input[idx1] * frac;
+    }
+    return output;
   }
 
   void reset() {

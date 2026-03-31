@@ -290,7 +290,8 @@ final conversationEngineProvider = Provider<ConversationEngine>((ref) {
   final engine = ConversationEngine();
   final settings = ref.watch(settingsProvider);
   engine.setPrimaryLanguage(settings.primaryLanguageCode);
-  debugPrint('[Provider] ConversationEngine created, primary=${settings.primaryLanguageCode}');
+  engine.setSampleRate(settings.sampleRate);
+  debugPrint('[Provider] ConversationEngine created, primary=${settings.primaryLanguageCode}, sampleRate=${settings.sampleRate}');
   ref.onDispose(() => engine.dispose());
   return engine;
 });
